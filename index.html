@@ -46,10 +46,16 @@
   .slots { font-size: .9rem; color: var(--warn); }
   .slots.done { color: var(--ok); }
   .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+  .error {
+    border: 1px solid var(--warn); color: var(--warn); border-radius: 12px;
+    padding: 14px; margin-bottom: 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
 </style>
 </head>
 <body>
 <main>
+  <noscript><div class="error">Esta página necesita JavaScript.</div></noscript>
+  <div id="error" class="error" hidden></div>
   <div id="empty" class="empty" hidden>Enlace sin datos.</div>
   <div id="app" hidden>
     <h1>Responder al casero</h1>
@@ -79,26 +85,45 @@
   </div>
 </main>
 <script>
-(function () {
-  function decode(fragment) {
-    var b64 = fragment.replace(/-/g, "+").replace(/_/g, "/");
-    while (b64.length % 4) b64 += "=";
-    var bin = atob(b64);
-    var bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return JSON.parse(new TextDecoder("utf-8").decode(bytes));
-  }
+// Cualquier fallo se muestra en pantalla: la página nunca queda en blanco.
+function showError(msg) {
+  var el = document.getElementById("error");
+  el.textContent = "Error: " + msg;
+  el.hidden = false;
+}
+window.addEventListener("error", function (ev) {
+  showError((ev.message || "error desconocido") + (ev.lineno ? " (línea " + ev.lineno + ")" : ""));
+});
 
-  var data = null;
-  try {
-    var frag = location.hash.slice(1);
-    if (frag) data = decode(frag);
-  } catch (e) { data = null; }
+function decode(fragment) {
+  var b64 = fragment.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  var bin = atob(b64);
+  var bytes = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
 
-  if (!data || typeof data.b !== "string") {
+try { init(); } catch (e) { showError(e && e.message ? e.message : String(e)); }
+
+function init() {
+  var frag = location.hash.slice(1);
+  if (!frag) {
     document.getElementById("empty").hidden = false;
     return;
   }
+
+  var data;
+  try {
+    data = decode(frag);
+  } catch (e) {
+    throw new Error("no se pudo leer el enlace (¿está cortado?). " + e.message);
+  }
+  if (!data || typeof data.b !== "string") {
+    throw new Error("el enlace no contiene un mensaje.");
+  }
+
+  document.getElementById("app").hidden = false;
 
   var subject = document.getElementById("subject");
   var body = document.getElementById("body");
@@ -142,7 +167,7 @@
       }
     });
   });
-})();
+}
 </script>
 </body>
 </html>
