@@ -29,13 +29,16 @@
     background: var(--card); border: 1px solid var(--border); border-radius: 12px;
     padding: 14px; margin-bottom: 14px;
   }
+  .card.pending { border-color: var(--warn); }
   label { display: block; font-size: .8rem; font-weight: 600; color: var(--muted);
           text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+  .card.pending label { color: var(--warn); }
   input, textarea {
     width: 100%; font: inherit; color: var(--text); background: transparent;
     border: 1px solid var(--border); border-radius: 8px; padding: 10px;
   }
   textarea { min-height: 60vh; resize: vertical; font-size: 15px; }
+  textarea.short { min-height: 0; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
   button, a.btn {
     font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 10px 16px;
@@ -45,6 +48,8 @@
   .status { font-size: .9rem; color: var(--ok); }
   .slots { font-size: .9rem; color: var(--warn); }
   .slots.done { color: var(--ok); }
+  .pending-note { color: var(--warn); font-size: .95rem; }
+  .num { color: var(--muted); font-weight: 400; }
   .empty { text-align: center; color: var(--muted); padding: 60px 0; }
   .error {
     border: 1px solid var(--warn); color: var(--warn); border-radius: 12px;
@@ -57,31 +62,38 @@
   <noscript><div class="error">Esta página necesita JavaScript.</div></noscript>
   <div id="error" class="error" hidden></div>
   <div id="empty" class="empty" hidden>Enlace sin datos.</div>
+
   <div id="app" hidden>
     <h1>Responder al casero</h1>
+    <p class="sub" id="sub" hidden></p>
 
     <div class="row" style="margin: 0 0 14px">
       <a class="btn secondary" id="open" href="#" target="_blank" rel="noopener noreferrer">Abrir anuncio</a>
     </div>
 
-    <div class="card">
-      <label for="subject">Asunto</label>
-      <input id="subject" type="text">
-      <div class="row">
-        <button type="button" data-copy="subject">Copiar asunto</button>
-        <span class="status" data-status="subject"></span>
+    <!-- Formato "mensaje único": asunto + mensaje -->
+    <div id="message" hidden>
+      <div class="card">
+        <label for="subject">Asunto</label>
+        <input id="subject" type="text">
+        <div class="row">
+          <button type="button" data-copy="subject">Copiar asunto</button>
+          <span class="status" data-status="subject"></span>
+        </div>
+      </div>
+      <div class="card">
+        <label for="body">Mensaje</label>
+        <textarea id="body" spellcheck="false"></textarea>
+        <div class="row">
+          <button type="button" data-copy="body">Copiar mensaje</button>
+          <span class="status" data-status="body"></span>
+          <span class="slots" id="slots"></span>
+        </div>
       </div>
     </div>
 
-    <div class="card">
-      <label for="body">Mensaje</label>
-      <textarea id="body" spellcheck="false"></textarea>
-      <div class="row">
-        <button type="button" data-copy="body">Copiar mensaje</button>
-        <span class="status" data-status="body"></span>
-        <span class="slots" id="slots"></span>
-      </div>
-    </div>
+    <!-- Formato "por casillas": se rellena desde el enlace -->
+    <div id="fields" hidden></div>
   </div>
 </main>
 <script>
@@ -104,6 +116,31 @@ function decode(fragment) {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
+function fallbackCopy(el) {
+  el.focus(); el.select();
+  try { return document.execCommand("copy"); } catch (e) { return false; }
+}
+
+function copyFrom(el, status) {
+  function done(ok) {
+    status.textContent = ok ? "Copiado" : "No se pudo copiar: selecciona y copia a mano";
+    setTimeout(function () { status.textContent = ""; }, 2500);
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(el.value).then(function () { done(true); },
+      function () { done(fallbackCopy(el)); });
+  } else {
+    done(fallbackCopy(el));
+  }
+}
+
+function el(tag, attrs, text) {
+  var e = document.createElement(tag);
+  for (var k in attrs || {}) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+
 try { init(); } catch (e) { showError(e && e.message ? e.message : String(e)); }
 
 function init() {
@@ -119,22 +156,27 @@ function init() {
   } catch (e) {
     throw new Error("no se pudo leer el enlace (¿está cortado?). " + e.message);
   }
-  if (!data || typeof data.b !== "string") {
-    throw new Error("el enlace no contiene un mensaje.");
-  }
+  if (!data || typeof data !== "object") throw new Error("el enlace no contiene datos.");
 
   document.getElementById("app").hidden = false;
+  var open = document.getElementById("open");
+  if (data.u && /^https?:\/\//i.test(data.u)) open.href = data.u;
+  else open.hidden = true;
 
+  if (Array.isArray(data.f)) renderFields(data);
+  else if (typeof data.b === "string") renderMessage(data);
+  else throw new Error("el enlace no contiene ni un mensaje ni casillas.");
+}
+
+// --- Formato "mensaje único" ---
+function renderMessage(data) {
+  document.getElementById("message").hidden = false;
   var subject = document.getElementById("subject");
   var body = document.getElementById("body");
   var slots = document.getElementById("slots");
-  var open = document.getElementById("open");
 
   subject.value = data.s || "";
   body.value = data.b;
-
-  if (data.u && /^https?:\/\//i.test(data.u)) open.href = data.u;
-  else open.hidden = true;
 
   function countSlots() {
     var n = ((subject.value + "\n" + body.value).match(/\[[^\]\n]*\]/g) || []).length;
@@ -145,27 +187,48 @@ function init() {
   body.addEventListener("input", countSlots);
   countSlots();
 
-  function fallbackCopy(el) {
-    el.focus(); el.select();
-    try { return document.execCommand("copy"); } catch (e) { return false; }
-  }
-
-  document.querySelectorAll("[data-copy]").forEach(function (btn) {
+  document.querySelectorAll("#message [data-copy]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       var id = btn.getAttribute("data-copy");
-      var el = document.getElementById(id);
-      var status = document.querySelector('[data-status="' + id + '"]');
-      function done(ok) {
-        status.textContent = ok ? "Copiado" : "No se pudo copiar: selecciona y copia a mano";
-        setTimeout(function () { status.textContent = ""; }, 2500);
-      }
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(el.value).then(function () { done(true); },
-          function () { done(fallbackCopy(el)); });
-      } else {
-        done(fallbackCopy(el));
-      }
+      copyFrom(document.getElementById(id), document.querySelector('[data-status="' + id + '"]'));
     });
+  });
+}
+
+// --- Formato "por casillas": lista ordenada pregunta → respuesta ---
+function renderFields(data) {
+  var root = document.getElementById("fields");
+  root.hidden = false;
+  var sub = document.getElementById("sub");
+  var pending = data.f.filter(function (f) { return f && f.m; }).length;
+  sub.textContent = (data.a ? data.a + " · " : "") + data.f.length + " casillas" +
+    (pending ? ", " + pending + " a rellenar a mano" : "");
+  sub.hidden = false;
+
+  data.f.forEach(function (f, i) {
+    if (!f || typeof f.q !== "string") return;
+    var card = el("div", { "class": "card" + (f.m ? " pending" : "") });
+    var label = el("label", { "for": "f" + i });
+    label.appendChild(el("span", { "class": "num" }, (i + 1) + ". "));
+    label.appendChild(document.createTextNode(f.q));
+    card.appendChild(label);
+
+    if (f.m) {
+      card.appendChild(el("div", { "class": "pending-note" }, "Pendiente: responder a mano"));
+    } else {
+      var answer = String(f.a == null ? "" : f.a);
+      var input = answer.length > 60 ? el("textarea", { id: "f" + i, "class": "short", rows: "4", spellcheck: "false" })
+                                     : el("input", { id: "f" + i, type: "text" });
+      input.value = answer;
+      card.appendChild(input);
+      var row = el("div", { "class": "row" });
+      var btn = el("button", { type: "button" }, "Copiar");
+      var status = el("span", { "class": "status" });
+      btn.addEventListener("click", function () { copyFrom(input, status); });
+      row.appendChild(btn); row.appendChild(status);
+      card.appendChild(row);
+    }
+    root.appendChild(card);
   });
 }
 </script>
